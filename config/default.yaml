@@ -1,0 +1,62 @@
+start_date: "2021-01-01"
+end_date: "2023-12-31"
+rebalance_freq: "M"
+price_field: "close"
+initial_cash: 10000000
+trade_fee_rate: 0.0002
+strategy: "risk_parity"
+lookback: 36
+trend_fast: 2
+trend_slow: 12
+weight_bounds:
+  min: 0.0
+  max: 0.85
+backtest:
+  margin: false
+  allow_loan: false
+  weight_type: "asset"
+performance:
+  benchmark_code: "000300.XSHG"
+  free_rate: 2.0
+  plot: true
+assets:
+  - asset: "沪深300"
+    order_book_id: "000300.XSHG"
+    asset_class: "权益"
+    center_weight: 0.10
+    tilt_step: 0.05
+  - asset: "中证500"
+    order_book_id: "000905.XSHG"
+    asset_class: "权益"
+    center_weight: 0.10
+    tilt_step: 0.05
+  - asset: "1-5年国开债"
+    order_book_id: "159649.XSHE"
+    asset_class: "债券"
+    center_weight: 0.60
+    tilt_step: 0.05
+  - asset: "SGE黄金"
+    order_book_id: "AU9999.SGEX"
+    asset_class: "黄金"
+    center_weight: 0.05
+    tilt_step: 0.05
+  - asset: "豆粕"
+    order_book_id: "159985.XSHE"
+    asset_class: "商品"
+    center_weight: 0.05
+    tilt_step: 0.05
+  - asset: "有色金属"
+    order_book_id: "512400.XSHG"
+    asset_class: "商品"
+    center_weight: 0.025
+    tilt_step: 0.025
+  - asset: "能化"
+    order_book_id: "159981.XSHE"
+    asset_class: "商品"
+    center_weight: 0.025
+    tilt_step: 0.025
+  - asset: "中证短融"
+    order_book_id: "511360.XSHG"
+    asset_class: "货币"
+    center_weight: 0.05
+    tilt_step: 0.00

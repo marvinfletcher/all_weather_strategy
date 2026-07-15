@@ -1,16 +1,108 @@
+# 回测主区间。宏观因子下载会自动向前预热，不必手动把 start_date 再提前很多。
 start_date: "2021-01-01"
-end_date: "2023-12-31"
+end_date: "2025-12-31"
 rebalance_freq: "M"
 price_field: "close"
+
+# 当前默认只走本地 CSV 工作流：
+# 1. scripts/download_data.py 写入 daily_price.csv / all_factors.csv
+# 2. scripts/run_backtest.py 与 all_weather.runner 只读取这些文件
+data:
+  source: "csv"
+  csv_path: "data/daily_price.csv"
+  factor_csv_path: "data/all_factors.csv"
 initial_cash: 10000000
 trade_fee_rate: 0.0002
-strategy: "risk_parity"
 lookback: 36
-trend_fast: 2
-trend_slow: 12
+
+# 最终投影约束作用在“组合层最终权重”上，不只作用在战略层中枢。
 weight_bounds:
-  min: 0.0
+  min: 0.01
   max: 0.85
+
+# 战术层默认采用“风险资产偏离中枢，现金吸收残差”的结构。
+tactical:
+  enabled: true
+  cash_asset: "中证短融"
+  tactical_adjust_caps:
+    "沪深300": 0.05
+    "中证500": 0.05
+    "1-5年国开债": 0.05
+    "SGE黄金": 0.05
+    "豆粕": 0.05
+    "有色金属": 0.025
+    "能化": 0.025
+  tech_score_clip_for_norm: 1.0
+
+# macro_rules 里每条规则的含义：
+# factor = 使用哪个宏观列
+# coef = 因子上升时对资产是利多(+1)还是利空(-1)
+# trend_months = 用多少期趋势来判断方向
+macro_defaults:
+  trend_months: 3
+macro_rules:
+  - factor: cn_pmi_lag1
+    impact:
+      "沪深300": { coef: 1, trend_months: 3 }
+      "中证500": { coef: 1, trend_months: 3 }
+      "1-5年国开债": { coef: -1, trend_months: 3 }
+      "SGE黄金": { coef: -1, trend_months: 3 }
+      "有色金属": { coef: 1, trend_months: 3 }
+      "能化": { coef: 1, trend_months: 3 }
+  - factor: cn_social_financing_yoy_pct_lag1
+    impact:
+      "沪深300": { coef: 1, trend_months: 1 }
+      "中证500": { coef: 1, trend_months: 1 }
+      "1-5年国开债": { coef: -1, trend_months: 3 }
+      "豆粕": { coef: 1, trend_months: 1 }
+      "有色金属": { coef: 1, trend_months: 1 }
+  - factor: cn_cpi_yoy_index_lag1
+    impact:
+      "沪深300": { coef: -1, trend_months: 1 }
+      "中证500": { coef: -1, trend_months: 1 }
+      "1-5年国开债": { coef: -1, trend_months: 3 }
+  - factor: cn10y_yield
+    impact:
+      "沪深300": { coef: -1, trend_months: 12 }
+      "中证500": { coef: -1, trend_months: 12 }
+  - factor: us10y
+    impact:
+      "豆粕": { coef: 1, trend_months: 1 }
+      "1-5年国开债": { coef: -1, trend_months: 1 }
+  - factor: usd_index
+    impact:
+      "沪深300": { coef: -1, trend_months: 1 }
+      "中证500": { coef: -1, trend_months: 1 }
+  - factor: us_m1_yoy_pct_lag1
+    impact:
+      "有色金属": { coef: 1, trend_months: 6 }
+  - factor: us_m2_yoy_pct_lag1
+    impact:
+      "SGE黄金": { coef: 1, trend_months: 12 }
+  - factor: us_cpi_yoy_pct_lag1
+    impact:
+      "豆粕": { coef: 1, trend_months: 1 }
+      "能化": { coef: 1, trend_months: 1 }
+  - factor: wti
+    impact:
+      "能化": { coef: 1, trend_months: 3 }
+  - factor: us10y_cn10y_diff
+    impact:
+      "SGE黄金": { coef: 1, trend_months: 1 }
+technical:
+  asset_class:
+    "沪深300": equity
+    "中证500": equity
+    "1-5年国开债": bond
+    "SGE黄金": gold
+    "豆粕": soybean
+    "有色金属": metal
+    "能化": energy
+    "中证短融": cash
+  llt_gamma: 0.7
+  trend_score_clip: 1.0
+
+# 回测框架当前按 weight_type="asset" 解释流水中的“买卖权重”。
 backtest:
   margin: false
   allow_loan: false
@@ -19,44 +111,38 @@ performance:
   benchmark_code: "000300.XSHG"
   free_rate: 2.0
   plot: true
+
+# center_weight 是长期战略中枢；真正下单前仍可能被战术层调整。
 assets:
   - asset: "沪深300"
     order_book_id: "000300.XSHG"
     asset_class: "权益"
     center_weight: 0.10
-    tilt_step: 0.05
   - asset: "中证500"
     order_book_id: "000905.XSHG"
     asset_class: "权益"
     center_weight: 0.10
-    tilt_step: 0.05
   - asset: "1-5年国开债"
     order_book_id: "159649.XSHE"
     asset_class: "债券"
     center_weight: 0.60
-    tilt_step: 0.05
   - asset: "SGE黄金"
     order_book_id: "AU9999.SGEX"
     asset_class: "黄金"
     center_weight: 0.05
-    tilt_step: 0.05
   - asset: "豆粕"
     order_book_id: "159985.XSHE"
     asset_class: "商品"
     center_weight: 0.05
-    tilt_step: 0.05
   - asset: "有色金属"
     order_book_id: "512400.XSHG"
     asset_class: "商品"
     center_weight: 0.025
-    tilt_step: 0.025
   - asset: "能化"
     order_book_id: "159981.XSHE"
     asset_class: "商品"
     center_weight: 0.025
-    tilt_step: 0.025
   - asset: "中证短融"
     order_book_id: "511360.XSHG"
     asset_class: "货币"
     center_weight: 0.05
-    tilt_step: 0.00

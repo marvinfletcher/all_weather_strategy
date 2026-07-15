@@ -1,7 +1,4 @@
-from .portfolio_backtest import run_portfolio  # noqa: F401  保留以兼容原调用
 import pandas as pd
-import math
-from datetime import datetime
 import numpy as np
 
 # plotly 可选：缺失时绘图步骤自动跳过
@@ -594,6 +591,23 @@ def _fetch_benchmark_npv(benchmark_code, strategy_index, start_date, end_date):
         return None
 
 
+def _align_benchmark_npv(
+    benchmark_npv: pd.Series | None,
+    strategy_index: pd.Index,
+) -> pd.Series | None:
+    if benchmark_npv is None:
+        return None
+
+    aligned = pd.Series(benchmark_npv.copy())
+    aligned.index = pd.to_datetime(aligned.index, errors="coerce")
+    aligned = aligned[aligned.index.notna()].sort_index()
+    aligned = aligned.groupby(aligned.index).last().ffill()
+    aligned = aligned.reindex(aligned.index.union(strategy_index)).sort_index().ffill().reindex(strategy_index)
+    if len(aligned) == 0:
+        return None
+    return aligned
+
+
 def _extract_column_series(backtest_result, col):
     """从 backtest_result 提取指定列的时序（兼容 updatetime 为列或索引）。"""
     df = backtest_result
@@ -615,6 +629,7 @@ def draw_combined_timeseries(
     backtest_result,
     label: str = "",
     benchmark_code: str | None = None,
+    benchmark_npv: pd.Series | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
     *,
@@ -652,7 +667,9 @@ def draw_combined_timeseries(
     if security is not None:
         security = security.reindex(npv.index).ffill().fillna(0.0)
 
-    bench_npv = _fetch_benchmark_npv(benchmark_code, npv.index, start_date, end_date)
+    bench_npv = _align_benchmark_npv(benchmark_npv, npv.index)
+    if bench_npv is None:
+        bench_npv = _fetch_benchmark_npv(benchmark_code, npv.index, start_date, end_date)
 
     title_main = "净值 / 回撤 / 资产价值 联动时序图"
     if label:
@@ -1230,6 +1247,7 @@ def run_performance(
     *,
     label: str = "",
     benchmark_code: str | None = None,
+    benchmark_npv: pd.Series | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
     free_rate: float = 2.0,
@@ -1297,6 +1315,7 @@ def run_performance(
             backtest_result=backtest_result,
             label=label,
             benchmark_code=benchmark_code,
+            benchmark_npv=benchmark_npv,
             start_date=start_date,
             end_date=end_date,
         )
@@ -1323,8 +1342,8 @@ def run_performance(
             if plot_periodic:
                 plot_periodic_returns_plotly(backtest_result, periods=tuple(periods_clean))
 
-            _print_title("【4】收益热力图")
             if heatmap_periodic:
+                _print_title("【4】收益热力图")
                 # 月度热力图（最常用）；若配置含 quarter 也补一张季度热力图
                 heat_periods = [p for p in periods_clean if p in {"month", "quarter"}]
                 for p in heat_periods:

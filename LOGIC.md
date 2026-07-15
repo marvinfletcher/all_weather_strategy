@@ -7,28 +7,81 @@
 配置入口为 `config/default.yaml`。当前默认逻辑：
 
 - 起始日：`2021-01-01`
-- 结束日：`null`，运行时使用当天日期
+- 结束日：`2025-12-31`
 - 调仓频率：月度 `M`
-- 策略：`fixed_plus_tilt`
+- 策略：由命令行 `--strategy` 决定；`0=fixed`，`1=inverse_vol`，`2=risk_parity`，`all` 为三种一起运行
 - 初始资金：`10,000,000`
 - 交易费率：`0.0002`
-- 权重上下限：`0.0 ~ 0.85`
+- 权重上下限：`0.01 ~ 0.85`
 - 回测权重类型：`weight_type: "asset"`
 - 资产池：配置中的全部 `assets`
+- 战术层：默认启用 `宏观分数 + 技术分数 + 现金残差调节`
+
+当前最常用的实际运行命令是：
+
+```bash
+python scripts/run_backtest.py --config config/default.yaml --strategy 0
+python scripts/run_backtest.py --config config/default.yaml --strategy 1
+python scripts/run_backtest.py --config config/default.yaml --strategy 2
+python scripts/run_backtest.py --config config/default.yaml --strategy all
+```
+
+如果不显式传 `--strategy`，脚本默认等价于 `--strategy 0`。
 
 `runner.run_backtest` 的主流程：
 
 1. 读取配置资产的 `order_book_id`。
-2. 通过 `RQDataProvider.get_price_panel` 拉取日频价格。
+2. 从 `data/daily_price.csv` 读取本地缓存价格。
 3. 将价格列名从 `order_book_id` 改成资产名称。
 4. 将日频价格转换为回测框架需要的长表行情 `market_data`。
 5. 将日频价格按 `rebalance_freq` 重采样为周期价格。
 6. 基于周期价格计算收益率。
 7. 生成目标权重表 `weight_schedule`。
-8. 将目标权重表转换成交易流水 `flow_data`。
-9. 调用复制过来的回测框架 `run_portfolio` 执行回测。
+8. 取第一期有效调仓信号对应的实际交易日，作为正式回测起点。
+9. 将行情裁到这个正式起点之后，再把目标权重表转换成交易流水 `flow_data`。
+10. 调用复制过来的回测框架 `run_portfolio` 执行回测。
 
-`RQDataProvider.get_price_panel` 会显式校验 RQ 是否返回了所有配置资产。如果某个 `order_book_id` 完全未返回，直接抛错，避免静默少跑资产。
+本地 CSV 读取时会显式校验配置资产是否齐全。如果某个 `order_book_id` 缺列，直接抛错，避免静默少跑资产。
+
+## 1.1 数据下载与缓存
+
+新增独立脚本 `scripts/download_data.py`：
+
+1. 读取配置中的 `start_date`、`end_date`、`price_field`、`assets` 和 `data.csv_path`。
+2. 在脚本内部直接连接米筐并下载宽表价格。
+3. 同时下载中国宏观因子与 FRED 美国宏观因子。
+4. 将结果分别保存为 `daily_price.csv` 与 `all_factors.csv`（或配置中的其它路径）。
+
+因此，日常使用的推荐顺序变成：
+
+1. 先运行 `python scripts/download_data.py --config config/default.yaml`
+2. 再运行 `python scripts/run_backtest.py --config config/default.yaml --strategy 0/1/2/all`
+
+这样回测阶段不再重复访问 RQ 下载同一份资产价格数据。
+
+## 1.2 文件职责与阅读顺序
+
+如果你是顺着当前代码继续改，最值得先看的文件一般是：
+
+1. `config/default.yaml`
+2. `scripts/run_backtest.py`
+3. `all_weather/runner.py`
+4. `all_weather/flow.py`
+5. `all_weather/weights/strategic.py`
+6. `all_weather/weights/signals_macro.py`
+7. `all_weather/weights/signals_technical.py`
+8. `all_weather/weights/tactical.py`
+
+对应职责大致是：
+
+- `config/default.yaml`：资产池、参数、宏观规则、技术规则
+- `scripts/run_backtest.py`：CLI 入口，负责解释 `--strategy 0/1/2/all`
+- `all_weather/runner.py`：把本地 CSV、信号、权重、流水、回测串起来
+- `all_weather/flow.py`：目标权重如何落成真实交易流水
+- `weights/strategic.py`：`fixed / inverse_vol / risk_parity`
+- `weights/signals_macro.py`：宏观因子如何映射成资产分数
+- `weights/signals_technical.py`：价格趋势如何映射成技术分数
+- `weights/tactical.py`：宏观分数 + 技术分数如何变成实际调权
 
 ## 2. 目标权重生成
 
@@ -38,37 +91,24 @@
 - columns：资产名称
 - value：该信号日的目标权重
 
-当前支持四类策略：
+当前支持三类策略：
 
-- `fixed`：固定中枢权重
-- `inverse_vol`：逆波动率权重
-- `risk_parity`：风险平价权重
-- `fixed_plus_tilt`：固定中枢权重 + 趋势战术偏移
+- `fixed`：固定比例战略权重
+- `inverse_vol`：逆波动率战略权重
+- `risk_parity`：风险平价战略权重
 
-当前默认策略为 `fixed_plus_tilt`。
+若命令行未显式传入 `--strategy`，默认按 `0`，也就是 `fixed` 运行。
 
-### fixed_plus_tilt 逻辑
+当前绩效可视化也统一改为 ECharts HTML 仪表页：
 
-1. 从配置中的 `center_weight` 读取战略中枢权重。
-2. 对中枢权重归一化，使权重和为 1。
-3. 用月度收益计算趋势分数：
-   - `fast_ret = monthly_ret.rolling(trend_fast).mean()`
-   - `slow_ret = monthly_ret.shift(trend_fast).rolling(trend_slow - trend_fast).mean()`
-   - `score = sign(fast_ret - slow_ret)`
-4. 分数为：
-   - `+1`：近期强于中期历史均值
-   - `-1`：近期弱于中期历史均值
-   - `0`：无明确信号或数据不足
-5. 对每个资产计算原始目标权重：
+- 单策略：展示收益率 / 回撤 / 资产价值联动图，并附年度收益表
+- 多策略：先展示净值对比图和多策略绩效汇总表，右侧按钮进入各策略详情页，详情页带返回按钮
 
-```python
-raw_weight = center_weight + trend_score * tilt_step
-```
+### 三类战略权重
 
-6. 将原始权重裁剪到 `[min_weight, max_weight]`。
-7. 再次归一化到权重和为 1。
+`fixed` 直接使用 `center_weight` 归一化后的中枢权重。
 
-### risk_parity 逻辑
+`inverse_vol` 使用最近 `lookback` 期收益率窗口的波动率倒数作为权重。
 
 `risk_parity` 使用最近 `lookback` 期收益率窗口：
 
@@ -79,7 +119,43 @@ raw_weight = center_weight + trend_score * tilt_step
 5. 每轮计算风险贡献。
 6. 通过指数更新降低风险贡献偏离。
 7. 收敛后返回近似等风险贡献权重。
-8. 再按 `[min_weight, max_weight]` 裁剪并归一化。
+8. 再投影到满足“每个资产上下限 + 总和为 1”的权重集合里。
+
+### 宏观 + 技术战术调整逻辑
+
+当 `tactical.enabled: true` 时，`fixed / inverse_vol / risk_parity` 三种战略权重都会继续叠加战术层：
+
+1. 从 `data/all_factors.csv` 读取宏观宽表。
+2. `weights/signals_macro.py` 按 `macro_rules` 逐条计算资产宏观分数。
+3. `weights/signals_technical.py` 按资产类别计算技术趋势分数。
+4. `weights/tactical.py` 将 `(macro_score + tech_score)` 按理论上界归一化到 `[-1, 1]`。
+5. 归一化分数乘以 `tactical_adjust_caps`，得到每个风险资产相对战略权重的增减幅度。
+6. 货币资产权重不单独打分，而是作为残差：
+
+```python
+w_cash = 1 - sum(w_risk_assets)
+```
+
+这样风险资产被调高时，现金自动下降；风险资产被调低时，现金自动上升。
+
+当前版本按 `gf_asset_alloc` 同款方式处理：
+
+- 风险资产目标权重：`base_weight + normalized_score * tactical_adjust_cap`
+- 若某个风险资产被调到负数，则直接截到 `0`
+- 若风险资产合计超过 `1`，则按比例整体缩放回 `1`
+- 现金资产权重始终取 `1 - sum(risk_assets)`
+
+也就是说，`fixed / inverse_vol / risk_parity` 三种战略权重的区别保留，但战术层的加减仓与现金残差行为统一对齐到 `gf_asset_alloc`。
+
+### 正式回测起点
+
+当前版本这里也对齐 `gf_asset_alloc`：
+
+1. 先用历史价格和宏观数据生成完整的信号/目标权重。
+2. 找到第一期有效目标权重对应的实际交易日。
+3. 正式净值曲线从这个交易日开始。
+
+因此，配置里的 `start_date` 更像“原始数据读取起点 + 信号预热起点”，不一定等于最终展示的净值起点。如果宏观规则需要先预热 12 个月，或者第一期调仓日要顺延到下一个交易日，前面那段时间不会再以“净值一直等于 1” 的形式出现在正式回测结果里。
 
 ## 3. 策略初始化流水
 

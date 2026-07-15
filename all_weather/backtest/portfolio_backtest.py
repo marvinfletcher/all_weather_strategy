@@ -932,21 +932,3 @@ def run_portfolio_batch(
     return results
     
 
-
-# %%
-if __name__ == '__main__':
-
-    # 交易流水数据处理:行情时间使用左标签，对应交易流水开始时间
-    flow_data = pd.read_excel("backtest_data/FlowData.xlsx")
-
-    # 行情数据读取测试
-    market_data = pd.read_csv("backtest_data/MarketData.csv")
-
-    # 持仓数据读取
-    position_data = pd.read_excel("backtest_data/PositionData.xlsx")
-
-    backtest_result, position_result,flow_data_new, backtest_obj = run_portfolio(market_data, flow_data, position_data)
-
-
-
-# %%

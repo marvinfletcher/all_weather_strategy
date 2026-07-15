@@ -13,12 +13,17 @@ def to_framework_market_data(price: pd.DataFrame, asset_config: pd.DataFrame) ->
     asset_config: 至少包含 `asset` 与 `order_book_id` 两列。
     """
     code_map = asset_config.set_index("asset")["order_book_id"].to_dict()
+    price_for_stack = price.rename(columns=code_map).copy()
+    price_for_stack.index = pd.to_datetime(price_for_stack.index)
+    price_for_stack.index.name = "datetime"
+    price_for_stack.columns = price_for_stack.columns.map(str)
+    price_for_stack.columns.name = "code"
+
     long_price = (
-        price.rename(columns=code_map)
-        .stack(dropna=True)
+        price_for_stack
+        .stack(future_stack=True)
         .rename("close_price")
         .reset_index()
-        .rename(columns={"date": "datetime", "order_book_id": "code"})
     )
     long_price["datetime"] = pd.to_datetime(long_price["datetime"])
     long_price["code"] = long_price["code"].astype(str)
@@ -33,7 +38,8 @@ def to_framework_market_data(price: pd.DataFrame, asset_config: pd.DataFrame) ->
 
 def to_period_price(price: pd.DataFrame, freq: str = "M") -> pd.DataFrame:
     """按调仓频率重采样为周期收盘价。"""
-    return price.resample(freq).last().dropna(how="all")
+    normalized_freq = "ME" if str(freq).upper() == "M" else freq
+    return price.resample(normalized_freq).last().dropna(how="all")
 
 
 def calc_returns(price: pd.DataFrame) -> pd.DataFrame:

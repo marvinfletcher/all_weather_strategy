@@ -5,12 +5,14 @@ from __future__ import annotations
 import pandas as pd
 
 from .weights.strategic import (
-    fixed_center_weights,
+    build_final_weight_bounds,
     inverse_vol_weights,
     normalize_weights,
+    project_weights_to_bounds,
     risk_parity_weights,
+    split_risk_cash_weights,
 )
-from .weights.tactical import apply_tactical_tilt, trend_score
+from .weights.tactical import apply_score_tilt
 
 
 FLOW_COLUMNS = [
@@ -35,39 +37,87 @@ DIRECTION_TRANSFER_IN = "划入"
 def build_weight_schedule(
     monthly_ret: pd.DataFrame,
     asset_config: pd.DataFrame,
-    strategy: str = "fixed_plus_tilt",
+    strategy: str = "risk_parity",
     lookback: int = 36,
-    trend_fast: int = 2,
-    trend_slow: int = 12,
     min_weight: float = 0.0,
     max_weight: float = 0.85,
+    tactical_enabled: bool = False,
+    tactical_adjust_caps: dict[str, float] | None = None,
+    cash_asset: str | None = None,
+    macro_scores: pd.DataFrame | None = None,
+    tech_scores: pd.DataFrame | None = None,
+    macro_rules: list[dict] | None = None,
+    macro_defaults: dict | None = None,
+    tech_score_clip_for_norm: float = 1.0,
 ) -> pd.DataFrame:
-    """按调仓日生成目标权重表 (index=signal_date, columns=asset)。"""
-    center = fixed_center_weights(asset_config).reindex(monthly_ret.columns).fillna(0.0)
-    score_panel = trend_score(monthly_ret, fast=trend_fast, slow=trend_slow).reindex(
-        columns=monthly_ret.columns
-    ).fillna(0.0)
+    """按调仓日生成目标权重表 (index=signal_date, columns=asset)。
+
+    生成顺序固定为：
+    1. 先做战略层（fixed / inverse_vol / risk_parity）
+    2. 再按需要叠加战术层（macro + technical）
+    3. 最后统一投影到组合层权重约束
+    """
+    risk_center_unit, cash_center_weight = split_risk_cash_weights(asset_config, cash_asset)
+    risk_assets = risk_center_unit.index.intersection(monthly_ret.columns)
+    lower_bounds, upper_bounds = build_final_weight_bounds(
+        monthly_ret.columns,
+        cash_asset=cash_asset,
+        min_weight=min_weight,
+        max_weight=max_weight,
+    )
     weights = []
+    tactical_adjust_caps = tactical_adjust_caps or {}
 
     for dt in monthly_ret.index:
         hist = monthly_ret.loc[:dt].tail(lookback)
+        hist_risk = hist.reindex(columns=risk_assets)
         if strategy == "fixed":
-            w = center.copy()
-        elif strategy == "inverse_vol":
-            w = inverse_vol_weights(hist).reindex(monthly_ret.columns).fillna(0.0)
-        elif strategy == "risk_parity":
-            w = risk_parity_weights(hist).reindex(monthly_ret.columns).fillna(0.0)
-            w = normalize_weights(w, min_weight=min_weight, max_weight=max_weight)
-        elif strategy == "fixed_plus_tilt":
-            w = apply_tactical_tilt(
-                center,
-                score_panel.loc[dt],
-                asset_config,
-                min_weight=min_weight,
-                max_weight=max_weight,
+            risk_w = normalize_weights(
+                risk_center_unit.reindex(risk_assets).fillna(0.0),
+                target_sum=1.0,
             )
+        elif strategy == "inverse_vol":
+            risk_w = normalize_weights(
+                inverse_vol_weights(hist_risk).reindex(risk_assets).fillna(0.0),
+                target_sum=1.0,
+            )
+        elif strategy == "risk_parity":
+            risk_w = risk_parity_weights(hist_risk).reindex(risk_assets).fillna(0.0)
+            risk_w = normalize_weights(risk_w, target_sum=1.0)
         else:
             raise ValueError(f"未知策略：{strategy}")
+
+        # 风险资产先在“非现金子组合”内部定权，再按现金中枢腾挪出 risk_budget。
+        risk_budget = max(0.0, 1.0 - cash_center_weight)
+        base_weights = pd.Series(0.0, index=monthly_ret.columns, dtype=float)
+        base_weights.loc[risk_assets] = risk_w * risk_budget
+        if cash_asset and cash_asset in base_weights.index:
+            base_weights.loc[cash_asset] = cash_center_weight
+
+        if (
+            tactical_enabled
+            and cash_asset
+            and macro_scores is not None
+            and tech_scores is not None
+        ):
+            w = apply_score_tilt(
+                base_weights=base_weights,
+                macro_score=macro_scores.loc[dt].reindex(monthly_ret.columns).fillna(0.0),
+                tech_score=tech_scores.loc[dt].reindex(monthly_ret.columns).fillna(0.0),
+                tactical_adjust_caps=tactical_adjust_caps,
+                cash_asset=cash_asset,
+                macro_rules=macro_rules,
+                macro_defaults=macro_defaults,
+                tech_score_clip_for_norm=tech_score_clip_for_norm,
+            )
+        else:
+            w = base_weights
+        w = project_weights_to_bounds(
+            w.reindex(monthly_ret.columns).fillna(0.0),
+            target_sum=1.0,
+            lower_bounds=lower_bounds,
+            upper_bounds=upper_bounds,
+        )
         weights.append(w.rename(dt))
 
     return pd.DataFrame(weights).reindex(columns=monthly_ret.columns).fillna(0.0)
@@ -170,7 +220,7 @@ def make_flow_data_from_weights(
                 )
 
         delta = target - previous
-        # 仅对可交易且 delta 非零的标的学生成流水；不可交易标的不生成买卖流水。
+        # 仅对可交易且 delta 非零的标的生成流水；不可交易标的不生成买卖流水。
         sells = delta[valid & (delta < -1e-8)].sort_values()
         buys = delta[valid & (delta > 1e-8)].sort_values(ascending=False)
         for direction, part in [(DIRECTION_SELL, sells), (DIRECTION_BUY, buys)]:

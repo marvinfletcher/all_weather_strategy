@@ -3,5 +3,6 @@ pandas>=2.0
 pyyaml>=6.0
 matplotlib>=3.7
 rqdatac>=3.0
+pandas_datareader>=0.10
 plotly>=5.0  # 可选：绩效模块交互式图表
 pyecharts>=2.1.0  # 可选：ECharts 联动时序图
